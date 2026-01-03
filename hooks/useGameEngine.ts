@@ -48,6 +48,7 @@ export const useGameEngine = ({ mode, onGameOver }: GameEngineProps) => {
 
   const localPlayerIdRef = useRef<string>('');
   const lastSpawnTimeRef = useRef<number>(0);
+  const nextPickupWaveTimeRef = useRef<number>(0);
 
   // --- Helpers ---
   const checkCollision = (obj1: any, obj2: any) => {
@@ -69,6 +70,22 @@ export const useGameEngine = ({ mode, onGameOver }: GameEngineProps) => {
     );
   };
 
+  const getNearestEnemy = (pos: Vector2, enemies: Enemy[]): Enemy | null => {
+    let nearest: Enemy | null = null;
+    let minDistSq = Infinity;
+    
+    for (const enemy of enemies) {
+      const dx = enemy.pos.x - pos.x;
+      const dy = enemy.pos.y - pos.y;
+      const distSq = dx*dx + dy*dy;
+      if (distSq < minDistSq) {
+        minDistSq = distSq;
+        nearest = enemy;
+      }
+    }
+    return nearest;
+  };
+
   const spawnProjectile = (player: Player) => {
     if (player.ammo <= 0) return;
     
@@ -87,8 +104,9 @@ export const useGameEngine = ({ mode, onGameOver }: GameEngineProps) => {
       vel: { x: Math.cos(angle) * speed, y: Math.sin(angle) * speed },
       width: 10,
       height: 10,
-      color: Constants.COLORS.PROJECTILE,
-      damage: 1
+      color: player.isHoming ? Constants.COLORS.PROJECTILE_HOMING : Constants.COLORS.PROJECTILE,
+      damage: 1,
+      isHoming: player.isHoming
     };
 
     stateRef.current.projectiles.push(projectile);
@@ -115,7 +133,11 @@ export const useGameEngine = ({ mode, onGameOver }: GameEngineProps) => {
         facingAngle: 0,
         name: 'Hero',
         score: 0,
-        kills: 0
+        kills: 0,
+        invincibleUntil: 0,
+        isInvincible: false,
+        homingUntil: 0,
+        isHoming: false
       };
 
       stateRef.current.players = [initialPlayer];
@@ -123,13 +145,17 @@ export const useGameEngine = ({ mode, onGameOver }: GameEngineProps) => {
       stateRef.current.isGameOver = false;
       stateRef.current.enemies = [];
       stateRef.current.projectiles = [];
+      stateRef.current.pickups = []; 
       lastSpawnTimeRef.current = 0;
       
+      const now = performance.now();
+      lastTimeRef.current = now;
+      nextPickupWaveTimeRef.current = now + 10000;
+
       if (mode === GameMode.PVE) {
         setDirectorMessage("Survive.");
       }
 
-      lastTimeRef.current = performance.now();
       requestRef.current = requestAnimationFrame(gameLoop);
     };
 
@@ -188,13 +214,15 @@ export const useGameEngine = ({ mode, onGameOver }: GameEngineProps) => {
     if (state.isGameOver) return;
 
     if (mode === GameMode.PVE) {
-        // PvE Survival Timer
         state.survivalTime += rawDeltaSeconds;
     }
 
     // 1. Update Local Player
     const localPlayer = state.players.find(p => p.isLocal);
     if (localPlayer) {
+      localPlayer.isInvincible = time < localPlayer.invincibleUntil;
+      localPlayer.isHoming = time < localPlayer.homingUntil;
+
       if (localPlayer.lives <= 0) {
           // handled at end
       } else {
@@ -218,8 +246,7 @@ export const useGameEngine = ({ mode, onGameOver }: GameEngineProps) => {
         localPlayer.pos.x += localPlayer.vel.x * deltaTime;
         localPlayer.pos.y += localPlayer.vel.y * deltaTime;
 
-        // Angle Calculation (Aiming)
-        // Adjust mouse pos by camera
+        // Angle Calculation
         const worldMouseX = inputRef.current.mouse.x + state.cameraOffset.x;
         const worldMouseY = inputRef.current.mouse.y + state.cameraOffset.y;
         localPlayer.facingAngle = Math.atan2(
@@ -229,8 +256,7 @@ export const useGameEngine = ({ mode, onGameOver }: GameEngineProps) => {
 
         // Shooting
         if (inputRef.current.mouseDown) {
-           // Basic cooldown logic could be added here
-           inputRef.current.mouseDown = false; // Semi-automatic for now
+           inputRef.current.mouseDown = false; 
            spawnProjectile(localPlayer);
         }
 
@@ -277,6 +303,30 @@ export const useGameEngine = ({ mode, onGameOver }: GameEngineProps) => {
     // 3. Projectiles
     for (let i = state.projectiles.length - 1; i >= 0; i--) {
       const proj = state.projectiles[i];
+
+      // Homing Logic
+      if (proj.isHoming && proj.source === 'PLAYER' && localPlayer) {
+        // Changed: Target nearest enemy to PLAYER instead of nearest to PROJECTILE
+        const target = getNearestEnemy(localPlayer.pos, state.enemies);
+        if (target) {
+          // Steer bullet velocity towards target
+          const targetAngle = Math.atan2(
+            (target.pos.y + target.height/2) - proj.pos.y,
+            (target.pos.x + target.width/2) - proj.pos.x
+          );
+          // Current angle
+          const currentAngle = Math.atan2(proj.vel.y, proj.vel.x);
+          
+          // Simple Lerp angle (not perfect wrapping but works for simple homing)
+          let newAngle = currentAngle + (targetAngle - currentAngle) * 0.1;
+          
+          // Recalculate velocity
+          const speed = Math.sqrt(proj.vel.x * proj.vel.x + proj.vel.y * proj.vel.y);
+          proj.vel.x = Math.cos(newAngle) * speed;
+          proj.vel.y = Math.sin(newAngle) * speed;
+        }
+      }
+
       proj.pos.x += proj.vel.x * deltaTime;
       proj.pos.y += proj.vel.y * deltaTime;
 
@@ -301,7 +351,9 @@ export const useGameEngine = ({ mode, onGameOver }: GameEngineProps) => {
         }
         if (!hit && proj.source === 'ENEMY' && localPlayer) {
            if (checkCollision(proj, localPlayer)) {
-              localPlayer.lives -= 1;
+              if (!localPlayer.isInvincible) {
+                localPlayer.lives -= 1;
+              }
               hit = true;
            }
         }
@@ -315,34 +367,62 @@ export const useGameEngine = ({ mode, onGameOver }: GameEngineProps) => {
     // 4. PvE Endless Logic
     if (mode === GameMode.PVE && localPlayer) {
       // Difficulty Scaling Algorithm
-      // 1. Max Enemies increases by 1 every 15 seconds. Base 1.
       const targetEnemyCount = 1 + Math.floor(state.survivalTime / 15);
+      // Cap standard enemy HP at 3
+      let calculatedHp = 1 + Math.floor(state.survivalTime / 10);
+      const currentEnemyMaxHp = Math.min(calculatedHp, 3);
       
-      // 2. Enemy HP increases by 1 every 10 seconds. Base 1.
-      const currentEnemyMaxHp = 1 + Math.floor(state.survivalTime / 10);
+      const spawnFlyingEnemy = calculatedHp >= 3 && Math.random() < 0.3; // 30% chance to spawn flyer if difficulty is maxed
 
       // Spawn Logic
       if (state.enemies.length < targetEnemyCount && (time - lastSpawnTimeRef.current) > 2000) {
          lastSpawnTimeRef.current = time;
          
-         // Random spawn X position, but not too close to player
-         let spawnX = Math.random() * Constants.WORLD_WIDTH;
-         if (Math.abs(spawnX - localPlayer.pos.x) < 400) {
-             spawnX = (spawnX + Constants.WORLD_WIDTH / 2) % Constants.WORLD_WIDTH;
-         }
+         if (spawnFlyingEnemy) {
+            // Spawn Flying Enemy
+            const direction = Math.random() < 0.5 ? 1 : -1;
+            const startX = direction === 1 ? -50 : Constants.WORLD_WIDTH + 50;
+            const startY = Math.random() * (Constants.FLYING_ENEMY_HEIGHT_MAX - Constants.FLYING_ENEMY_HEIGHT_MIN) + Constants.FLYING_ENEMY_HEIGHT_MIN;
+            
+            // Passes increase with difficulty (time)
+            const passes = 1 + Math.floor((state.survivalTime - 30) / 20); // Adds 1 pass every 20s after difficulty cap
 
-         state.enemies.push({
-           id: Math.random().toString(),
-           pos: { x: spawnX, y: 100 },
-           vel: { x: 0, y: 0 },
-           width: Constants.ENEMY_SIZE,
-           height: Constants.ENEMY_SIZE,
-           hp: currentEnemyMaxHp,
-           maxHp: currentEnemyMaxHp,
-           color: Constants.COLORS.ENEMY,
-           attackCooldown: Math.random() * 2000 + 1000,
-           isGrounded: false
-         });
+            state.enemies.push({
+               id: Math.random().toString(),
+               type: 'FLYING',
+               pos: { x: startX, y: startY },
+               vel: { x: direction * Constants.FLYING_ENEMY_SPEED, y: 0 },
+               width: Constants.FLYING_ENEMY_SIZE,
+               height: Constants.FLYING_ENEMY_SIZE,
+               hp: 2, // Flyers only have 2 HP
+               maxHp: 2,
+               color: Constants.COLORS.ENEMY_FLYING,
+               attackCooldown: Math.random() * 2000 + 1000,
+               isGrounded: false,
+               direction: direction,
+               passesRemaining: Math.max(1, Math.min(passes, 5))
+            });
+         } else {
+            // Spawn Standard Enemy
+            let spawnX = Math.random() * Constants.WORLD_WIDTH;
+            if (Math.abs(spawnX - localPlayer.pos.x) < 400) {
+               spawnX = (spawnX + Constants.WORLD_WIDTH / 2) % Constants.WORLD_WIDTH;
+            }
+
+            state.enemies.push({
+               id: Math.random().toString(),
+               type: 'STANDARD',
+               pos: { x: spawnX, y: 100 },
+               vel: { x: 0, y: 0 },
+               width: Constants.ENEMY_SIZE,
+               height: Constants.ENEMY_SIZE,
+               hp: currentEnemyMaxHp,
+               maxHp: currentEnemyMaxHp,
+               color: Constants.COLORS.ENEMY,
+               attackCooldown: Math.random() * 2000 + 1000,
+               isGrounded: false
+            });
+         }
       }
 
       // Enemy AI
@@ -350,86 +430,195 @@ export const useGameEngine = ({ mode, onGameOver }: GameEngineProps) => {
         const enemy = state.enemies[i];
         if (enemy.hp <= 0) {
            state.enemies.splice(i, 1);
-           localPlayer.score += (10 * currentEnemyMaxHp);
+           localPlayer.score += 20;
            localPlayer.kills += 1;
+
+           // --- DROP ITEM LOGIC (On Kill) ---
+           if (Math.random() < Constants.ENEMY_DROP_CHANCE) {
+              const rand = Math.random();
+              let type: Pickup['type'] = 'AMMO';
+              let color = Constants.COLORS.AMMO_PICKUP;
+              let value = 5;
+
+              if (rand > 0.90) { 
+                 type = 'INVINCIBILITY';
+                 color = Constants.COLORS.INVINCIBILITY_PICKUP;
+                 value = 0;
+              } else if (rand > 0.80) { // New: 10% for Homing
+                 type = 'HOMING';
+                 color = Constants.COLORS.HOMING_PICKUP;
+                 value = 0;
+              } else if (rand > 0.5) { 
+                 type = 'HEALTH';
+                 color = Constants.COLORS.HEALTH_PICKUP;
+                 value = 1;
+              }
+
+              state.pickups.push({
+                id: Math.random().toString(),
+                type,
+                value,
+                pos: { x: enemy.pos.x, y: enemy.pos.y },
+                vel: { x: (Math.random() - 0.5) * 4, y: -4 }, 
+                width: 20,
+                height: 20,
+                color,
+                expiresAt: time + Constants.PICKUP_LIFETIME
+              });
+           }
            continue;
         }
 
-        // Gravity
-        enemy.vel.y += Constants.GRAVITY;
-        
-        // Move towards player
-        const dx = localPlayer.pos.x - enemy.pos.x;
-        const dy = localPlayer.pos.y - enemy.pos.y;
+        if (enemy.type === 'FLYING') {
+            // --- FLYING BEHAVIOR ---
+            enemy.pos.x += enemy.vel.x * deltaTime;
+            
+            // Check Bounds for Passes
+            if (enemy.direction === 1 && enemy.pos.x > Constants.WORLD_WIDTH + 100) {
+                // Reached right end
+                enemy.passesRemaining = (enemy.passesRemaining || 1) - 1;
+                if (enemy.passesRemaining <= 0) {
+                    state.enemies.splice(i, 1); // Despawn
+                    continue;
+                }
+                enemy.direction = -1;
+                enemy.vel.x = -Constants.FLYING_ENEMY_SPEED;
+            } else if (enemy.direction === -1 && enemy.pos.x < -100) {
+                // Reached left end
+                enemy.passesRemaining = (enemy.passesRemaining || 1) - 1;
+                if (enemy.passesRemaining <= 0) {
+                    state.enemies.splice(i, 1); // Despawn
+                    continue;
+                }
+                enemy.direction = 1;
+                enemy.vel.x = Constants.FLYING_ENEMY_SPEED;
+            }
 
-        // Horizontal Movement
-        if (Math.abs(dx) > 10) {
-           enemy.vel.x = Math.sign(dx) * 2; 
+            // Attack Logic (Vertical Drop)
+            enemy.attackCooldown -= deltaTime * 16.67;
+            if (enemy.attackCooldown <= 0) {
+               state.projectiles.push({
+                  id: Math.random().toString(36).substring(7),
+                  ownerId: enemy.id,
+                  source: 'ENEMY',
+                  pos: { 
+                     x: enemy.pos.x + enemy.width/2, 
+                     y: enemy.pos.y + enemy.height 
+                  },
+                  vel: { x: 0, y: Constants.ENEMY_PROJECTILE_SPEED }, // Vertical Drop
+                  width: 10,
+                  height: 10,
+                  color: Constants.COLORS.PROJECTILE_ENEMY,
+                  damage: 1
+               });
+               enemy.attackCooldown = Constants.ENEMY_FIRE_RATE * 0.8; // Slightly faster fire rate
+            }
+
         } else {
-           enemy.vel.x = 0;
-        }
+            // --- STANDARD BEHAVIOR ---
+            // Gravity
+            enemy.vel.y += Constants.GRAVITY;
+            
+            // Move towards player
+            const dx = localPlayer.pos.x - enemy.pos.x;
+            const dy = localPlayer.pos.y - enemy.pos.y;
 
-        // Vertical Movement (JUMP Logic)
-        // If player is significantly above enemy (dy < -80) AND enemy is grounded
-        if (enemy.isGrounded && dy < -80 && Math.random() < 0.05) {
-          enemy.vel.y = Constants.JUMP_FORCE;
-          enemy.isGrounded = false;
-        }
+            if (Math.abs(dx) > 10) {
+               enemy.vel.x = Math.sign(dx) * 2; 
+            } else {
+               enemy.vel.x = 0;
+            }
 
-        enemy.pos.x += enemy.vel.x * deltaTime;
-        enemy.pos.y += enemy.vel.y * deltaTime;
+            // Vertical Movement (JUMP Logic)
+            if (enemy.isGrounded && dy < -80 && Math.random() < 0.05) {
+               enemy.vel.y = Constants.JUMP_FORCE;
+               enemy.isGrounded = false;
+            }
 
-        // Platform collision
-        enemy.isGrounded = false;
-        state.platforms.forEach(plat => {
-          if (checkCollision(enemy, plat)) {
-             if (enemy.vel.y > 0 && enemy.pos.y < plat.y) {
-               enemy.pos.y = plat.y - enemy.height;
-               enemy.vel.y = 0;
-               enemy.isGrounded = true;
-             }
-          }
-        });
-        
-        // Attack Logic
-        enemy.attackCooldown -= deltaTime * 16.67;
-        if (enemy.attackCooldown <= 0) {
-          const angle = Math.atan2(
-            (localPlayer.pos.y + localPlayer.height/2) - (enemy.pos.y + enemy.height/2),
-            (localPlayer.pos.x + localPlayer.width/2) - (enemy.pos.x + enemy.width/2)
-          );
-          
-          state.projectiles.push({
-            id: Math.random().toString(36).substring(7),
-            ownerId: enemy.id,
-            source: 'ENEMY',
-            pos: { 
-              x: enemy.pos.x + enemy.width/2, 
-              y: enemy.pos.y + enemy.height/2 
-            },
-            vel: { 
-              x: Math.cos(angle) * Constants.ENEMY_PROJECTILE_SPEED, 
-              y: Math.sin(angle) * Constants.ENEMY_PROJECTILE_SPEED 
-            },
-            width: 8,
-            height: 8,
-            color: Constants.COLORS.PROJECTILE_ENEMY,
-            damage: 1
-          });
+            enemy.pos.x += enemy.vel.x * deltaTime;
+            enemy.pos.y += enemy.vel.y * deltaTime;
 
-          enemy.attackCooldown = Constants.ENEMY_FIRE_RATE;
+            // Platform collision
+            enemy.isGrounded = false;
+            state.platforms.forEach(plat => {
+               if (checkCollision(enemy, plat)) {
+                  if (enemy.vel.y > 0 && enemy.pos.y < plat.y) {
+                     enemy.pos.y = plat.y - enemy.height;
+                     enemy.vel.y = 0;
+                     enemy.isGrounded = true;
+                  }
+               }
+            });
+            
+            // Attack Logic
+            enemy.attackCooldown -= deltaTime * 16.67;
+            if (enemy.attackCooldown <= 0) {
+               const angle = Math.atan2(
+                  (localPlayer.pos.y + localPlayer.height/2) - (enemy.pos.y + enemy.height/2),
+                  (localPlayer.pos.x + localPlayer.width/2) - (enemy.pos.x + enemy.width/2)
+               );
+               
+               state.projectiles.push({
+                  id: Math.random().toString(36).substring(7),
+                  ownerId: enemy.id,
+                  source: 'ENEMY',
+                  pos: { 
+                     x: enemy.pos.x + enemy.width/2, 
+                     y: enemy.pos.y + enemy.height/2 
+                  },
+                  vel: { 
+                     x: Math.cos(angle) * Constants.ENEMY_PROJECTILE_SPEED, 
+                     y: Math.sin(angle) * Constants.ENEMY_PROJECTILE_SPEED 
+                  },
+                  width: 8,
+                  height: 8,
+                  color: Constants.COLORS.PROJECTILE_ENEMY,
+                  damage: 1
+               });
+
+               enemy.attackCooldown = Constants.ENEMY_FIRE_RATE;
+            }
         }
 
         // Contact damage
         if (checkCollision(enemy, localPlayer)) {
-           localPlayer.vel.x = Math.sign(localPlayer.pos.x - enemy.pos.x) * 10;
-           localPlayer.vel.y = -5;
+           if (localPlayer.isInvincible) {
+              enemy.hp = 0; // Insta-kill
+              localPlayer.vel.y = -5;
+           } else {
+              localPlayer.vel.x = Math.sign(localPlayer.pos.x - enemy.pos.x) * 10;
+              localPlayer.vel.y = -5;
+           }
         }
       }
     }
 
-    // 5. Pickups
-    if (Math.random() < 0.002) { 
+    // 5. Pickups & Periodic Wave
+    // --- PERIODIC WAVE DROP (Every 10 seconds) ---
+    if (time >= nextPickupWaveTimeRef.current) {
+       nextPickupWaveTimeRef.current = time + 10000;
+       
+       const dropTypes: Pickup['type'][] = ['HEALTH', 'AMMO', 'INVINCIBILITY', 'HOMING'];
+       dropTypes.forEach(type => {
+         state.pickups.push({
+            id: Math.random().toString(),
+            type,
+            value: type === 'HEALTH' ? 1 : (type === 'AMMO' ? 5 : 0),
+            pos: { x: Math.random() * Constants.WORLD_WIDTH, y: -50 }, // From sky
+            vel: { x: 0, y: 0 },
+            width: 20,
+            height: 20,
+            color: type === 'HEALTH' ? Constants.COLORS.HEALTH_PICKUP : (type === 'AMMO' ? Constants.COLORS.AMMO_PICKUP : (type === 'INVINCIBILITY' ? Constants.COLORS.INVINCIBILITY_PICKUP : Constants.COLORS.HOMING_PICKUP)),
+            expiresAt: time + Constants.PICKUP_LIFETIME
+         });
+       });
+       
+       setDirectorMessage("SUPPLY DROP INCOMING!");
+       setTimeout(() => setDirectorMessage(""), 3000);
+    }
+
+    // Fallback periodic sky drops (reduced chance)
+    if (Math.random() < 0.0005) { 
        const isHealth = Math.random() < 0.2; 
        state.pickups.push({
          id: Math.random().toString(),
@@ -453,11 +642,14 @@ export const useGameEngine = ({ mode, onGameOver }: GameEngineProps) => {
 
        pickup.vel.y += Constants.GRAVITY;
        pickup.pos.y += pickup.vel.y * deltaTime;
+       pickup.pos.x += pickup.vel.x * deltaTime; 
+       pickup.vel.x *= 0.95; 
        
        state.platforms.forEach(plat => {
          if (checkCollision(pickup, plat)) {
            pickup.pos.y = plat.y - pickup.height;
            pickup.vel.y = 0;
+           pickup.vel.x = 0;
          }
        });
 
@@ -466,6 +658,12 @@ export const useGameEngine = ({ mode, onGameOver }: GameEngineProps) => {
            localPlayer.ammo = Math.min(localPlayer.ammo + pickup.value, localPlayer.maxAmmo);
          } else if (pickup.type === 'HEALTH') {
            localPlayer.lives = Math.min(localPlayer.lives + pickup.value, Constants.INITIAL_LIVES);
+         } else if (pickup.type === 'INVINCIBILITY') {
+           localPlayer.invincibleUntil = time + Constants.INVINCIBILITY_DURATION;
+           localPlayer.isInvincible = true;
+         } else if (pickup.type === 'HOMING') {
+           localPlayer.homingUntil = time + Constants.HOMING_DURATION;
+           localPlayer.isHoming = true;
          }
          state.pickups.splice(i, 1);
        }

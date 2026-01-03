@@ -27,19 +27,30 @@ export interface Player extends Entity {
   name: string;
   score: number;
   kills: number;
+  invincibleUntil: number;
+  isInvincible: boolean;
+  homingUntil: number;
+  isHoming: boolean;
 }
 
 export interface Projectile extends Entity {
   ownerId: string;
   source: 'PLAYER' | 'ENEMY';
   damage: number;
+  isHoming?: boolean; // New property for player bullets
 }
 
+export type EnemyType = 'STANDARD' | 'FLYING';
+
 export interface Enemy extends Entity {
+  type: EnemyType;
   hp: number;
   maxHp: number;
   attackCooldown: number;
   isGrounded: boolean;
+  // Flying enemy specific
+  passesRemaining?: number;
+  direction?: 1 | -1; // 1 right, -1 left
 }
 
 export interface Platform {
@@ -50,7 +61,7 @@ export interface Platform {
 }
 
 export interface Pickup extends Entity {
-  type: 'AMMO' | 'HEALTH';
+  type: 'AMMO' | 'HEALTH' | 'INVINCIBILITY' | 'HOMING';
   value: number;
   expiresAt: number;
 }

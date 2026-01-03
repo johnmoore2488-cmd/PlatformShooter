@@ -2,11 +2,9 @@ import React, { useState } from 'react';
 import { GameMode } from './types';
 import { useGameEngine } from './hooks/useGameEngine';
 import GameCanvas from './components/GameCanvas';
-import Lobby from './components/Lobby';
 
 const App: React.FC = () => {
   const [mode, setMode] = useState<GameMode>(GameMode.MENU);
-  const [roomId, setRoomId] = useState<string>('');
   const [gameOverResult, setGameOverResult] = useState<string | null>(null);
 
   const handleGameOver = (winner?: string) => {
@@ -16,13 +14,11 @@ const App: React.FC = () => {
   const resetGame = () => {
     setMode(GameMode.MENU);
     setGameOverResult(null);
-    setRoomId('');
   };
 
   // The engine is always initialized but we only render canvas when active
   const engine = useGameEngine({
-    mode: (mode === GameMode.PVP_GAME || mode === GameMode.PVE) ? mode : GameMode.MENU, // prevent running loop in menu effectively
-    roomId,
+    mode: mode === GameMode.PVE ? mode : GameMode.MENU, // prevent running loop in menu effectively
     onGameOver: handleGameOver
   });
 
@@ -30,7 +26,7 @@ const App: React.FC = () => {
     return (
       <div className="flex flex-col items-center justify-center min-h-screen bg-black/90 text-white z-50 absolute inset-0">
          <h1 className="text-6xl font-black text-red-500 mb-4 tracking-tighter uppercase">Terminated</h1>
-         <p className="text-2xl text-slate-300 mb-8">Winner: {gameOverResult}</p>
+         <p className="text-2xl text-slate-300 mb-8">{gameOverResult}</p>
          <button 
            onClick={resetGame}
            className="px-8 py-3 bg-white text-black font-bold text-lg rounded hover:bg-slate-200 transition"
@@ -52,7 +48,7 @@ const App: React.FC = () => {
             NEON RIFT
           </h1>
           <p className="text-xl text-slate-400 mb-12 tracking-wide">
-            Adaptive AI Warfare & Local PvP
+            Adaptive AI Warfare
           </p>
 
           <div className="flex flex-col gap-4 w-full max-w-xs mx-auto">
@@ -60,15 +56,8 @@ const App: React.FC = () => {
               onClick={() => setMode(GameMode.PVE)}
               className="bg-cyan-600 hover:bg-cyan-500 text-white font-bold py-4 px-6 rounded-lg shadow-lg shadow-cyan-500/20 transition transform hover:-translate-y-1"
             >
-              PvE CAMPAIGN
+              START GAME
               <span className="block text-xs font-normal opacity-70 mt-1">vs Gemini AI Director</span>
-            </button>
-            <button
-              onClick={() => setMode(GameMode.PVP_LOBBY)}
-              className="bg-purple-600 hover:bg-purple-500 text-white font-bold py-4 px-6 rounded-lg shadow-lg shadow-purple-500/20 transition transform hover:-translate-y-1"
-            >
-              PvP ARENA
-              <span className="block text-xs font-normal opacity-70 mt-1">Multi-Tab Local Network</span>
             </button>
           </div>
           
@@ -77,18 +66,6 @@ const App: React.FC = () => {
           </div>
         </div>
       </div>
-    );
-  }
-
-  if (mode === GameMode.PVP_LOBBY) {
-    return (
-      <Lobby 
-        onJoin={(id) => {
-          setRoomId(id);
-          setMode(GameMode.PVP_GAME);
-        }}
-        onBack={() => setMode(GameMode.MENU)}
-      />
     );
   }
 

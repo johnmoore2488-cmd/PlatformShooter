@@ -11,7 +11,6 @@ export const ENEMY_SIZE = 32;
 export const MAX_AMMO = 20;
 export const WORLD_WIDTH = 2000;
 export const WORLD_HEIGHT = 1000;
-export const GAME_DURATION = 60; // seconds
 
 export const INITIAL_LIVES = 3;
 export const PICKUP_LIFETIME = 10000; // 10 seconds
@@ -31,7 +30,6 @@ export const MAP_PLATFORMS = [
 
 export const COLORS = {
   PLAYER_LOCAL: '#3b82f6', // blue-500
-  PLAYER_REMOTE: '#ef4444', // red-500
   ENEMY: '#10b981', // emerald-500
   PROJECTILE: '#f59e0b', // amber-500
   PROJECTILE_ENEMY: '#d946ef', // fuchsia-500

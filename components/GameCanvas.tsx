@@ -1,5 +1,5 @@
 import React, { useEffect } from 'react';
-import { GameState, GameMode } from '../types';
+import { GameState } from '../types';
 import * as Constants from '../constants';
 
 interface GameCanvasProps {
@@ -103,7 +103,6 @@ const GameCanvas: React.FC<GameCanvasProps> = ({ gameState, canvasRef, directorM
   if (!gameState) return null;
 
   const localPlayer = gameState.players.find(p => p.isLocal);
-  const isPvp = gameState.players.length > 1; // Basic check or pass prop
   
   return (
     <div className="relative w-full h-full">
@@ -116,15 +115,9 @@ const GameCanvas: React.FC<GameCanvasProps> = ({ gameState, canvasRef, directorM
       
       {/* Time Display */}
       <div className="absolute top-4 left-1/2 -translate-x-1/2 pointer-events-none">
-        {isPvp ? (
-           <div className={`text-4xl font-mono font-bold px-4 py-2 rounded-lg bg-slate-900/50 border border-slate-700 backdrop-blur-sm ${gameState.timeLeft < 10 ? 'text-red-500 animate-pulse' : 'text-white'}`}>
-              {Math.ceil(gameState.timeLeft)}s
-           </div>
-        ) : (
-           <div className="text-4xl font-mono font-bold px-4 py-2 rounded-lg bg-slate-900/50 border border-slate-700 backdrop-blur-sm text-cyan-400">
-              SURVIVED: {gameState.survivalTime.toFixed(1)}s
-           </div>
-        )}
+        <div className="text-4xl font-mono font-bold px-4 py-2 rounded-lg bg-slate-900/50 border border-slate-700 backdrop-blur-sm text-cyan-400">
+          SURVIVED: {gameState.survivalTime.toFixed(1)}s
+        </div>
       </div>
       
       {/* HUD Overlay */}
@@ -163,8 +156,8 @@ const GameCanvas: React.FC<GameCanvasProps> = ({ gameState, canvasRef, directorM
         </div>
       )}
 
-      {/* Enemy Count (for PvE) */}
-      {!isPvp && gameState.enemies.length > 0 && (
+      {/* Enemy Count */}
+      {gameState.enemies.length > 0 && (
         <div className="absolute top-4 right-4 flex flex-col items-end gap-2 pointer-events-none">
           <div className="bg-red-900/80 p-1 px-4 rounded-full border border-red-700">
              <span className="text-red-200 text-sm font-bold">{gameState.enemies.length} HOSTILES</span>

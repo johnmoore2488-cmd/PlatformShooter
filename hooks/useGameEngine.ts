@@ -11,15 +11,13 @@ import {
 } from '../types';
 import * as Constants from '../constants';
 import { generateWaveConfig } from '../services/geminiService';
-import { NetworkService } from '../services/networkService';
 
 interface GameEngineProps {
   mode: GameMode;
-  roomId?: string;
-  onGameOver: (winner?: string) => void;
+  onGameOver: (result: string) => void;
 }
 
-export const useGameEngine = ({ mode, roomId, onGameOver }: GameEngineProps) => {
+export const useGameEngine = ({ mode, onGameOver }: GameEngineProps) => {
   const [gameState, setGameState] = useState<GameState | null>(null);
   const [directorMessage, setDirectorMessage] = useState<string>("");
 
@@ -37,7 +35,6 @@ export const useGameEngine = ({ mode, roomId, onGameOver }: GameEngineProps) => 
     cameraOffset: { x: 0, y: 0 },
     wave: 1,
     isGameOver: false,
-    timeLeft: Constants.GAME_DURATION,
     survivalTime: 0
   });
 
@@ -49,7 +46,6 @@ export const useGameEngine = ({ mode, roomId, onGameOver }: GameEngineProps) => 
     mouseDown: false,
   });
 
-  const networkRef = useRef<NetworkService | null>(null);
   const localPlayerIdRef = useRef<string>('');
   const lastSpawnTimeRef = useRef<number>(0);
 
@@ -96,13 +92,6 @@ export const useGameEngine = ({ mode, roomId, onGameOver }: GameEngineProps) => 
     };
 
     stateRef.current.projectiles.push(projectile);
-
-    if (mode === GameMode.PVP_GAME && networkRef.current) {
-      networkRef.current.send({
-        type: 'PROJECTILE_SPAWN',
-        payload: projectile
-      });
-    }
   };
 
   // --- Initialization ---
@@ -130,7 +119,6 @@ export const useGameEngine = ({ mode, roomId, onGameOver }: GameEngineProps) => 
       };
 
       stateRef.current.players = [initialPlayer];
-      stateRef.current.timeLeft = Constants.GAME_DURATION;
       stateRef.current.survivalTime = 0;
       stateRef.current.isGameOver = false;
       stateRef.current.enemies = [];
@@ -139,13 +127,6 @@ export const useGameEngine = ({ mode, roomId, onGameOver }: GameEngineProps) => 
       
       if (mode === GameMode.PVE) {
         setDirectorMessage("Survive.");
-      } else if (mode === GameMode.PVP_GAME && roomId) {
-        networkRef.current = new NetworkService((packet) => {
-          handleNetworkPacket(packet);
-        });
-        networkRef.current.connect(roomId);
-        networkRef.current.enableDiscovery(roomId); // Enable discovery for other players
-        networkRef.current.id = localId; 
       }
 
       lastTimeRef.current = performance.now();
@@ -156,55 +137,9 @@ export const useGameEngine = ({ mode, roomId, onGameOver }: GameEngineProps) => 
 
     return () => {
       if (requestRef.current !== null) cancelAnimationFrame(requestRef.current);
-      if (networkRef.current) networkRef.current.disconnect();
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [mode, roomId]);
-
-  const handleNetworkPacket = (packet: any) => {
-    const state = stateRef.current;
-    if (packet.type === 'JOIN') {
-      // Add remote player if not exists
-      if (!state.players.find(p => p.id === packet.senderId)) {
-        state.players.push({
-          id: packet.senderId,
-          isLocal: false,
-          pos: { x: 400, y: 700 },
-          vel: { x: 0, y: 0 },
-          width: Constants.PLAYER_SIZE,
-          height: Constants.PLAYER_SIZE,
-          color: Constants.COLORS.PLAYER_REMOTE,
-          lives: Constants.INITIAL_LIVES,
-          ammo: Constants.MAX_AMMO,
-          maxAmmo: Constants.MAX_AMMO,
-          isGrounded: false,
-          facingAngle: 0,
-          name: 'Rival',
-          score: 0,
-          kills: 0
-        });
-      }
-    } else if (packet.type === 'STATE_UPDATE') {
-      const p = state.players.find(p => p.id === packet.senderId);
-      if (p) {
-        p.pos = packet.payload.pos;
-        p.vel = packet.payload.vel;
-        p.facingAngle = packet.payload.facingAngle;
-        p.lives = packet.payload.lives; // Sync lives
-        p.kills = packet.payload.kills;
-      } else {
-        // Late joiner handling: create them
-        state.players.push({
-          id: packet.senderId,
-          isLocal: false,
-          ...packet.payload,
-          color: Constants.COLORS.PLAYER_REMOTE
-        });
-      }
-    } else if (packet.type === 'PROJECTILE_SPAWN') {
-      state.projectiles.push(packet.payload);
-    }
-  };
+  }, [mode]);
 
   // --- Input Listeners ---
   useEffect(() => {
@@ -252,23 +187,7 @@ export const useGameEngine = ({ mode, roomId, onGameOver }: GameEngineProps) => 
     const state = stateRef.current;
     if (state.isGameOver) return;
 
-    // PvP Timer Logic
-    if (mode === GameMode.PVP_GAME) {
-        state.timeLeft -= rawDeltaSeconds;
-        if (state.timeLeft <= 0) {
-            state.timeLeft = 0;
-            state.isGameOver = true;
-            // Determine Winner by Lives
-            const localPlayer = state.players.find(p => p.isLocal);
-            const remotePlayer = state.players.find(p => !p.isLocal);
-            const remoteLives = remotePlayer ? remotePlayer.lives : 0;
-            
-            if (localPlayer && localPlayer.lives > remoteLives) onGameOver("You");
-            else if (localPlayer && remoteLives > localPlayer.lives) onGameOver("Opponent");
-            else onGameOver("Draw");
-            return;
-        }
-    } else if (mode === GameMode.PVE) {
+    if (mode === GameMode.PVE) {
         // PvE Survival Timer
         state.survivalTime += rawDeltaSeconds;
     }
@@ -342,20 +261,6 @@ export const useGameEngine = ({ mode, roomId, onGameOver }: GameEngineProps) => 
         }
         if (localPlayer.pos.x < 0) localPlayer.pos.x = 0;
         if (localPlayer.pos.x > Constants.WORLD_WIDTH) localPlayer.pos.x = Constants.WORLD_WIDTH;
-
-        // Sync Network
-        if (mode === GameMode.PVP_GAME && networkRef.current) {
-          networkRef.current.send({
-            type: 'STATE_UPDATE',
-            payload: {
-              pos: localPlayer.pos,
-              vel: localPlayer.vel,
-              facingAngle: localPlayer.facingAngle,
-              lives: localPlayer.lives,
-              kills: localPlayer.kills
-            }
-          });
-        }
       }
     }
 
@@ -403,21 +308,6 @@ export const useGameEngine = ({ mode, roomId, onGameOver }: GameEngineProps) => 
         if (hit) {
            state.projectiles.splice(i, 1);
            continue;
-        }
-      }
-
-      // Hit Check (PvP)
-      if (mode === GameMode.PVP_GAME) {
-        let hit = false;
-        state.players.forEach(player => {
-          if (player.id !== proj.ownerId && checkCollision(proj, player)) {
-             if (player.isLocal) player.lives -= 1; 
-             hit = true;
-          }
-        });
-        if (hit) {
-          state.projectiles.splice(i, 1);
-          continue;
         }
       }
     }
@@ -585,7 +475,7 @@ export const useGameEngine = ({ mode, roomId, onGameOver }: GameEngineProps) => 
     if (localPlayer && localPlayer.lives <= 0) {
       state.isGameOver = true;
       const survival = state.survivalTime.toFixed(1) + 's';
-      onGameOver(mode === GameMode.PVP_GAME ? 'Opponent' : `Survival: ${survival} | Kills: ${localPlayer.kills}`);
+      onGameOver(`Survival: ${survival} | Kills: ${localPlayer.kills}`);
     }
 
     setGameState({ ...state });

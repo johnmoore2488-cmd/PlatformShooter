@@ -1,8 +1,6 @@
 export enum GameMode {
   MENU = 'MENU',
   PVE = 'PVE',
-  PVP_LOBBY = 'PVP_LOBBY',
-  PVP_GAME = 'PVP_GAME',
 }
 
 export interface Vector2 {
@@ -66,9 +64,7 @@ export interface GameState {
   cameraOffset: Vector2;
   wave: number;
   isGameOver: boolean;
-  winner?: string; // For PvP
-  timeLeft: number; // Seconds remaining (PvP)
-  survivalTime: number; // Seconds survived (PvE)
+  survivalTime: number; // Seconds survived
 }
 
 export interface WaveConfig {
@@ -77,10 +73,4 @@ export interface WaveConfig {
   enemyHp: number;
   spawnInterval: number;
   flavorText: string;
-}
-
-export interface NetworkPacket {
-  type: 'JOIN' | 'STATE_UPDATE' | 'PROJECTILE_SPAWN' | 'HIT' | 'GAME_OVER';
-  payload: any;
-  senderId: string;
 }

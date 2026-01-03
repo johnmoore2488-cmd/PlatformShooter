@@ -144,6 +144,7 @@ export const useGameEngine = ({ mode, roomId, onGameOver }: GameEngineProps) => 
           handleNetworkPacket(packet);
         });
         networkRef.current.connect(roomId);
+        networkRef.current.enableDiscovery(roomId); // Enable discovery for other players
         networkRef.current.id = localId; 
       }
 

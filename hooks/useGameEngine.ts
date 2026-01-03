@@ -14,10 +14,11 @@ import { generateWaveConfig } from '../services/geminiService';
 
 interface GameEngineProps {
   mode: GameMode;
+  initialLives: number; // Added
   onGameOver: (result: string) => void;
 }
 
-export const useGameEngine = ({ mode, onGameOver }: GameEngineProps) => {
+export const useGameEngine = ({ mode, initialLives, onGameOver }: GameEngineProps) => {
   const [gameState, setGameState] = useState<GameState | null>(null);
   const [directorMessage, setDirectorMessage] = useState<string>("");
 
@@ -31,6 +32,7 @@ export const useGameEngine = ({ mode, onGameOver }: GameEngineProps) => {
     projectiles: [],
     enemies: [],
     pickups: [],
+    warnings: [],
     platforms: Constants.MAP_PLATFORMS,
     cameraOffset: { x: 0, y: 0 },
     wave: 1,
@@ -41,7 +43,8 @@ export const useGameEngine = ({ mode, onGameOver }: GameEngineProps) => {
   const inputRef = useRef({
     left: false,
     right: false,
-    up: false,
+    jump: false,
+    jetpack: false,
     mouse: { x: 0, y: 0 },
     mouseDown: false,
   });
@@ -49,6 +52,12 @@ export const useGameEngine = ({ mode, onGameOver }: GameEngineProps) => {
   const localPlayerIdRef = useRef<string>('');
   const lastSpawnTimeRef = useRef<number>(0);
   const nextPickupWaveTimeRef = useRef<number>(0);
+  
+  // Special Event State (Manages Flying Enemies AND Missiles)
+  const directorStateRef = useRef<{
+     nextEventTime: number;
+     activeWarning: { layerY: number, expires: number } | null;
+  }>({ nextEventTime: 5000, activeWarning: null }); // First special event check at 5s
 
   // --- Helpers ---
   const checkCollision = (obj1: any, obj2: any) => {
@@ -106,7 +115,8 @@ export const useGameEngine = ({ mode, onGameOver }: GameEngineProps) => {
       height: 10,
       color: player.isHoming ? Constants.COLORS.PROJECTILE_HOMING : Constants.COLORS.PROJECTILE,
       damage: 1,
-      isHoming: player.isHoming
+      isHoming: player.isHoming,
+      projectileType: 'BULLET'
     };
 
     stateRef.current.projectiles.push(projectile);
@@ -126,7 +136,7 @@ export const useGameEngine = ({ mode, onGameOver }: GameEngineProps) => {
         width: Constants.PLAYER_SIZE,
         height: Constants.PLAYER_SIZE,
         color: Constants.COLORS.PLAYER_LOCAL,
-        lives: Constants.INITIAL_LIVES,
+        lives: initialLives,
         ammo: Constants.MAX_AMMO,
         maxAmmo: Constants.MAX_AMMO,
         isGrounded: false,
@@ -137,7 +147,9 @@ export const useGameEngine = ({ mode, onGameOver }: GameEngineProps) => {
         invincibleUntil: 0,
         isInvincible: false,
         homingUntil: 0,
-        isHoming: false
+        isHoming: false,
+        jetpackFuel: Constants.JETPACK_MAX_FUEL, // Start full
+        isThrusting: false
       };
 
       stateRef.current.players = [initialPlayer];
@@ -146,7 +158,9 @@ export const useGameEngine = ({ mode, onGameOver }: GameEngineProps) => {
       stateRef.current.enemies = [];
       stateRef.current.projectiles = [];
       stateRef.current.pickups = []; 
+      stateRef.current.warnings = [];
       lastSpawnTimeRef.current = 0;
+      directorStateRef.current = { nextEventTime: 5000, activeWarning: null }; // Reset director
       
       const now = performance.now();
       lastTimeRef.current = now;
@@ -165,19 +179,21 @@ export const useGameEngine = ({ mode, onGameOver }: GameEngineProps) => {
       if (requestRef.current !== null) cancelAnimationFrame(requestRef.current);
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [mode]);
+  }, [mode, initialLives]);
 
   // --- Input Listeners ---
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
       if (e.key === 'a' || e.key === 'ArrowLeft') inputRef.current.left = true;
       if (e.key === 'd' || e.key === 'ArrowRight') inputRef.current.right = true;
-      if (e.key === 'w' || e.key === 'ArrowUp' || e.key === ' ') inputRef.current.up = true;
+      if (e.key === 'w' || e.key === 'ArrowUp') inputRef.current.jump = true;
+      if (e.key === ' ') inputRef.current.jetpack = true;
     };
     const handleKeyUp = (e: KeyboardEvent) => {
       if (e.key === 'a' || e.key === 'ArrowLeft') inputRef.current.left = false;
       if (e.key === 'd' || e.key === 'ArrowRight') inputRef.current.right = false;
-      if (e.key === 'w' || e.key === 'ArrowUp' || e.key === ' ') inputRef.current.up = false;
+      if (e.key === 'w' || e.key === 'ArrowUp') inputRef.current.jump = false;
+      if (e.key === ' ') inputRef.current.jetpack = false;
     };
     const handleMouseMove = (e: MouseEvent) => {
       if (canvasRef.current) {
@@ -206,8 +222,9 @@ export const useGameEngine = ({ mode, onGameOver }: GameEngineProps) => {
 
   // --- Game Loop ---
   const gameLoop = useCallback(async (time: number) => {
-    const deltaTime = (time - lastTimeRef.current) / 16.67; // Normalize to ~60FPS
-    const rawDeltaSeconds = (time - lastTimeRef.current) / 1000;
+    const deltaTimeMs = time - lastTimeRef.current;
+    const deltaTime = deltaTimeMs / 16.67; // Normalize to ~60FPS
+    const rawDeltaSeconds = deltaTimeMs / 1000;
     lastTimeRef.current = time;
 
     const state = stateRef.current;
@@ -233,13 +250,27 @@ export const useGameEngine = ({ mode, onGameOver }: GameEngineProps) => {
         localPlayer.vel.x *= Constants.FRICTION;
         localPlayer.vel.x = Math.max(Math.min(localPlayer.vel.x, Constants.MAX_SPEED), -Constants.MAX_SPEED);
         
-        // Physics Y
+        // Physics Y (Gravity)
         localPlayer.vel.y += Constants.GRAVITY;
         
-        // Jump
-        if (inputRef.current.up && localPlayer.isGrounded) {
-          localPlayer.vel.y = Constants.JUMP_FORCE;
-          localPlayer.isGrounded = false;
+        // Jump Logic (Instant impulse on ground)
+        if (inputRef.current.jump && localPlayer.isGrounded) {
+           localPlayer.vel.y = Constants.JUMP_FORCE;
+           localPlayer.isGrounded = false;
+        }
+
+        // Jetpack Logic (Continuous force with fuel)
+        localPlayer.isThrusting = false; // Default off
+        if (inputRef.current.jetpack && localPlayer.jetpackFuel > 0) {
+           localPlayer.vel.y -= Constants.JETPACK_FORCE;
+           localPlayer.jetpackFuel = Math.max(0, localPlayer.jetpackFuel - deltaTimeMs);
+           localPlayer.isThrusting = true;
+        } else {
+           // Recharge when not using
+           localPlayer.jetpackFuel = Math.min(
+              Constants.JETPACK_MAX_FUEL, 
+              localPlayer.jetpackFuel + deltaTimeMs * Constants.JETPACK_RECHARGE_RATE
+           );
         }
 
         // Apply Velocity
@@ -331,7 +362,7 @@ export const useGameEngine = ({ mode, onGameOver }: GameEngineProps) => {
       proj.pos.y += proj.vel.y * deltaTime;
 
       // Despawn
-      if (proj.pos.x < 0 || proj.pos.x > Constants.WORLD_WIDTH || proj.pos.y < 0 || proj.pos.y > Constants.WORLD_HEIGHT) {
+      if (proj.pos.x < 0 || proj.pos.x > Constants.WORLD_WIDTH + 200 || proj.pos.y < 0 || proj.pos.y > Constants.WORLD_HEIGHT) {
         state.projectiles.splice(i, 1);
         continue;
       }
@@ -352,77 +383,145 @@ export const useGameEngine = ({ mode, onGameOver }: GameEngineProps) => {
         if (!hit && proj.source === 'ENEMY' && localPlayer) {
            if (checkCollision(proj, localPlayer)) {
               if (!localPlayer.isInvincible) {
-                localPlayer.lives -= 1;
+                // Apply specific damage (Missiles do 3, Bullets do 2)
+                localPlayer.lives -= (proj.damage || 1);
               }
               hit = true;
            }
         }
         if (hit) {
-           state.projectiles.splice(i, 1);
-           continue;
+           // If bullet, destroy it. Missiles penetrate.
+           if (proj.projectileType !== 'MISSILE') {
+             state.projectiles.splice(i, 1);
+             continue;
+           }
         }
       }
     }
 
-    // 4. PvE Endless Logic
+    // 4. PvE Endless Logic & Special Events (Director)
     if (mode === GameMode.PVE && localPlayer) {
-      // Difficulty Scaling Algorithm
+      const directorState = directorStateRef.current;
+      
+      // --- SPECIAL EVENT SYSTEM ---
+      // Check if any special entity is currently active (Missiles or Flyers)
+      const isFlyingEnemyActive = state.enemies.some(e => e.type === 'FLYING');
+      const isMissileActive = state.projectiles.some(p => p.projectileType === 'MISSILE');
+      const isWarningActive = state.warnings.length > 0;
+      
+      const canTriggerSpecial = !isFlyingEnemyActive && !isMissileActive && !isWarningActive;
+
+      // 1. Trigger Event
+      if (canTriggerSpecial && time > directorState.nextEventTime) {
+         // Randomly choose between Flying Enemy or Missile Array
+         const eventType = Math.random() < 0.5 ? 'FLYING' : 'MISSILE';
+
+         if (eventType === 'FLYING') {
+             // Spawn Flying Enemy
+             const direction = Math.random() < 0.5 ? 1 : -1;
+             const startX = direction === 1 ? -50 : Constants.WORLD_WIDTH + 50;
+             const startY = Math.random() * (Constants.FLYING_ENEMY_HEIGHT_MAX - Constants.FLYING_ENEMY_HEIGHT_MIN) + Constants.FLYING_ENEMY_HEIGHT_MIN;
+             
+             state.enemies.push({
+                id: Math.random().toString(),
+                type: 'FLYING',
+                pos: { x: startX, y: startY },
+                vel: { x: direction * Constants.FLYING_ENEMY_SPEED, y: 0 },
+                width: Constants.FLYING_ENEMY_SIZE,
+                height: Constants.FLYING_ENEMY_SIZE,
+                hp: 2,
+                maxHp: 2,
+                color: Constants.COLORS.ENEMY_FLYING,
+                attackCooldown: Math.random() * 2000 + 1000,
+                isGrounded: false,
+                direction: direction,
+                passesRemaining: 3
+             });
+             
+             setDirectorMessage("WARNING: AERIAL TARGET DETECTED");
+
+             // Set cooldown for next event
+             directorState.nextEventTime = time + Constants.MISSILE_COOLDOWN_BASE;
+
+         } else {
+             // Start Missile Sequence
+             // Randomly choose Ground or Layer 1
+             const targetLayer = Math.random() < 0.5 ? 'GROUND' : 'SKY';
+             const layerY = targetLayer === 'GROUND' ? 700 : 550;
+             const layerHeight = 100;
+
+             state.warnings.push({
+               id: Math.random().toString(),
+               y: layerY,
+               height: layerHeight,
+               expiresAt: time + Constants.MISSILE_WARNING_TIME,
+               layerName: targetLayer
+             });
+
+             directorState.activeWarning = { layerY, expires: time + Constants.MISSILE_WARNING_TIME };
+             setDirectorMessage(`WARNING: MISSILE BARRAGE [${targetLayer}]`);
+             
+             // Next event time will be set after firing
+         }
+      }
+
+      // 2. Process Missile Firing (if warning active)
+      if (directorState.activeWarning && time > directorState.activeWarning.expires) {
+         // Clear warnings
+         state.warnings = [];
+         
+         // Spawn 3 missiles traveling Left
+         const startY = directorState.activeWarning.layerY;
+         const offsets = [20, 50, 80]; // Spacing within the 100px band
+         
+         offsets.forEach(offset => {
+            state.projectiles.push({
+              id: Math.random().toString(),
+              ownerId: 'SYSTEM',
+              source: 'ENEMY',
+              pos: { x: Constants.WORLD_WIDTH + 100, y: startY + offset },
+              vel: { x: -Constants.MISSILE_SPEED, y: 0 },
+              width: Constants.MISSILE_WIDTH,
+              height: Constants.MISSILE_HEIGHT,
+              color: Constants.COLORS.MISSILE,
+              damage: Constants.MISSILE_DAMAGE,
+              projectileType: 'MISSILE'
+            });
+         });
+
+         directorState.activeWarning = null;
+         directorState.nextEventTime = time + Constants.MISSILE_COOLDOWN_BASE;
+      }
+
+
+      // --- STANDARD ENEMY SPAWNING ---
       const targetEnemyCount = 1 + Math.floor(state.survivalTime / 15);
       // Cap standard enemy HP at 3
       let calculatedHp = 1 + Math.floor(state.survivalTime / 10);
       const currentEnemyMaxHp = Math.min(calculatedHp, 3);
       
-      const spawnFlyingEnemy = calculatedHp >= 3 && Math.random() < 0.3; // 30% chance to spawn flyer if difficulty is maxed
-
-      // Spawn Logic
-      if (state.enemies.length < targetEnemyCount && (time - lastSpawnTimeRef.current) > 2000) {
+      // Spawn Logic (Only Standard Enemies Here)
+      if (state.enemies.filter(e => e.type === 'STANDARD').length < targetEnemyCount && (time - lastSpawnTimeRef.current) > 2000) {
          lastSpawnTimeRef.current = time;
          
-         if (spawnFlyingEnemy) {
-            // Spawn Flying Enemy
-            const direction = Math.random() < 0.5 ? 1 : -1;
-            const startX = direction === 1 ? -50 : Constants.WORLD_WIDTH + 50;
-            const startY = Math.random() * (Constants.FLYING_ENEMY_HEIGHT_MAX - Constants.FLYING_ENEMY_HEIGHT_MIN) + Constants.FLYING_ENEMY_HEIGHT_MIN;
-            
-            // Passes increase with difficulty (time)
-            const passes = 1 + Math.floor((state.survivalTime - 30) / 20); // Adds 1 pass every 20s after difficulty cap
-
-            state.enemies.push({
-               id: Math.random().toString(),
-               type: 'FLYING',
-               pos: { x: startX, y: startY },
-               vel: { x: direction * Constants.FLYING_ENEMY_SPEED, y: 0 },
-               width: Constants.FLYING_ENEMY_SIZE,
-               height: Constants.FLYING_ENEMY_SIZE,
-               hp: 2, // Flyers only have 2 HP
-               maxHp: 2,
-               color: Constants.COLORS.ENEMY_FLYING,
-               attackCooldown: Math.random() * 2000 + 1000,
-               isGrounded: false,
-               direction: direction,
-               passesRemaining: Math.max(1, Math.min(passes, 5))
-            });
-         } else {
-            // Spawn Standard Enemy
-            let spawnX = Math.random() * Constants.WORLD_WIDTH;
-            if (Math.abs(spawnX - localPlayer.pos.x) < 400) {
-               spawnX = (spawnX + Constants.WORLD_WIDTH / 2) % Constants.WORLD_WIDTH;
-            }
-
-            state.enemies.push({
-               id: Math.random().toString(),
-               type: 'STANDARD',
-               pos: { x: spawnX, y: 100 },
-               vel: { x: 0, y: 0 },
-               width: Constants.ENEMY_SIZE,
-               height: Constants.ENEMY_SIZE,
-               hp: currentEnemyMaxHp,
-               maxHp: currentEnemyMaxHp,
-               color: Constants.COLORS.ENEMY,
-               attackCooldown: Math.random() * 2000 + 1000,
-               isGrounded: false
-            });
+         let spawnX = Math.random() * Constants.WORLD_WIDTH;
+         if (Math.abs(spawnX - localPlayer.pos.x) < 400) {
+            spawnX = (spawnX + Constants.WORLD_WIDTH / 2) % Constants.WORLD_WIDTH;
          }
+
+         state.enemies.push({
+            id: Math.random().toString(),
+            type: 'STANDARD',
+            pos: { x: spawnX, y: 100 },
+            vel: { x: 0, y: 0 },
+            width: Constants.ENEMY_SIZE,
+            height: Constants.ENEMY_SIZE,
+            hp: currentEnemyMaxHp,
+            maxHp: currentEnemyMaxHp,
+            color: Constants.COLORS.ENEMY,
+            attackCooldown: Math.random() * 2000 + 1000,
+            isGrounded: false
+         });
       }
 
       // Enemy AI
@@ -434,17 +533,22 @@ export const useGameEngine = ({ mode, onGameOver }: GameEngineProps) => {
            localPlayer.kills += 1;
 
            // --- DROP ITEM LOGIC (On Kill) ---
-           if (Math.random() < Constants.ENEMY_DROP_CHANCE) {
+           // Requirement: Flying Enemies drop 100%. Standard 35%.
+           const isFlying = enemy.type === 'FLYING';
+           const shouldDrop = isFlying || Math.random() < Constants.ENEMY_DROP_CHANCE;
+
+           if (shouldDrop) {
               const rand = Math.random();
               let type: Pickup['type'] = 'AMMO';
               let color = Constants.COLORS.AMMO_PICKUP;
               let value = 5;
 
+              // Adjusted weights for Flying enemies to be more rewarding
               if (rand > 0.90) { 
                  type = 'INVINCIBILITY';
                  color = Constants.COLORS.INVINCIBILITY_PICKUP;
                  value = 0;
-              } else if (rand > 0.80) { // New: 10% for Homing
+              } else if (rand > 0.80) { 
                  type = 'HOMING';
                  color = Constants.COLORS.HOMING_PICKUP;
                  value = 0;
@@ -509,7 +613,8 @@ export const useGameEngine = ({ mode, onGameOver }: GameEngineProps) => {
                   width: 10,
                   height: 10,
                   color: Constants.COLORS.PROJECTILE_ENEMY,
-                  damage: 1
+                  damage: Constants.ENEMY_BULLET_DAMAGE,
+                  projectileType: 'BULLET'
                });
                enemy.attackCooldown = Constants.ENEMY_FIRE_RATE * 0.8; // Slightly faster fire rate
             }
@@ -573,21 +678,35 @@ export const useGameEngine = ({ mode, onGameOver }: GameEngineProps) => {
                   width: 8,
                   height: 8,
                   color: Constants.COLORS.PROJECTILE_ENEMY,
-                  damage: 1
+                  damage: Constants.ENEMY_BULLET_DAMAGE,
+                  projectileType: 'BULLET'
                });
 
                enemy.attackCooldown = Constants.ENEMY_FIRE_RATE;
             }
         }
 
-        // Contact damage
+        // Contact damage & Stomp Logic
         if (checkCollision(enemy, localPlayer)) {
-           if (localPlayer.isInvincible) {
-              enemy.hp = 0; // Insta-kill
-              localPlayer.vel.y = -5;
+           // STOMP MECHANIC: Check if falling and above
+           const isStomp = localPlayer.vel.y > 0 && (localPlayer.pos.y + localPlayer.height) < (enemy.pos.y + enemy.height * 0.7);
+
+           if (isStomp && enemy.type === 'STANDARD') {
+               // Successful Stomp
+               enemy.hp = 0; // Kill instant
+               localPlayer.vel.y = Constants.JUMP_FORCE * 0.5; // Bounce up
+               localPlayer.score += 50;
+               // No damage to player
            } else {
-              localPlayer.vel.x = Math.sign(localPlayer.pos.x - enemy.pos.x) * 10;
-              localPlayer.vel.y = -5;
+               // Normal Damage
+               if (localPlayer.isInvincible) {
+                  enemy.hp = 0; // Insta-kill
+                  localPlayer.vel.y = -5;
+               } else {
+                  localPlayer.vel.x = Math.sign(localPlayer.pos.x - enemy.pos.x) * 10;
+                  localPlayer.vel.y = -5;
+                  // localPlayer.lives -= 1; // Removed body damage as requested
+               }
            }
         }
       }
@@ -613,8 +732,10 @@ export const useGameEngine = ({ mode, onGameOver }: GameEngineProps) => {
          });
        });
        
-       setDirectorMessage("SUPPLY DROP INCOMING!");
-       setTimeout(() => setDirectorMessage(""), 3000);
+       if (mode === GameMode.PVE) {
+          setDirectorMessage("SUPPLY DROP INCOMING!");
+          setTimeout(() => setDirectorMessage(""), 3000);
+       }
     }
 
     // Fallback periodic sky drops (reduced chance)
@@ -657,7 +778,7 @@ export const useGameEngine = ({ mode, onGameOver }: GameEngineProps) => {
          if (pickup.type === 'AMMO') {
            localPlayer.ammo = Math.min(localPlayer.ammo + pickup.value, localPlayer.maxAmmo);
          } else if (pickup.type === 'HEALTH') {
-           localPlayer.lives = Math.min(localPlayer.lives + pickup.value, Constants.INITIAL_LIVES);
+           localPlayer.lives = Math.min(localPlayer.lives + pickup.value, initialLives); // Use initialLives as Max
          } else if (pickup.type === 'INVINCIBILITY') {
            localPlayer.invincibleUntil = time + Constants.INVINCIBILITY_DURATION;
            localPlayer.isInvincible = true;
@@ -678,7 +799,7 @@ export const useGameEngine = ({ mode, onGameOver }: GameEngineProps) => {
 
     setGameState({ ...state });
     requestRef.current = requestAnimationFrame(gameLoop);
-  }, [mode, onGameOver]);
+  }, [mode, initialLives, onGameOver]);
 
 
   return {

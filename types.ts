@@ -31,13 +31,16 @@ export interface Player extends Entity {
   isInvincible: boolean;
   homingUntil: number;
   isHoming: boolean;
+  jetpackFuel: number; // Current fuel in ms
+  isThrusting: boolean; // Visual state for jetpack
 }
 
 export interface Projectile extends Entity {
   ownerId: string;
   source: 'PLAYER' | 'ENEMY';
   damage: number;
-  isHoming?: boolean; // New property for player bullets
+  isHoming?: boolean;
+  projectileType?: 'BULLET' | 'MISSILE'; // New field
 }
 
 export type EnemyType = 'STANDARD' | 'FLYING';
@@ -66,11 +69,20 @@ export interface Pickup extends Entity {
   expiresAt: number;
 }
 
+export interface Warning {
+  id: string;
+  y: number;
+  height: number;
+  expiresAt: number;
+  layerName: string; // For debugging/display
+}
+
 export interface GameState {
   players: Player[];
   projectiles: Projectile[];
   enemies: Enemy[];
   pickups: Pickup[];
+  warnings: Warning[]; // New warning system
   platforms: Platform[];
   cameraOffset: Vector2;
   wave: number;

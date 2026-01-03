@@ -3,22 +3,25 @@ import { GameState, Vector2 } from '../types';
 import * as Constants from '../constants';
 import { 
   PLAYER_SPRITE, 
-  PLAYER_RUN_1,
-  PLAYER_RUN_2,
-  PLAYER_JUMP,
+  PLAYER_RUN_1, 
+  PLAYER_RUN_2, 
+  PLAYER_JUMP, 
+  SPRITE_JETPACK,
+  SPRITE_JET_FIRE,
   ENEMY_STANDARD_SPRITE, 
-  ENEMY_STANDARD_MOVE_2,
+  ENEMY_STANDARD_MOVE_2, 
   ENEMY_FLYING_SPRITE, 
-  ENEMY_FLYING_2,
+  ENEMY_FLYING_2, 
+  SPRITE_MISSILE, 
   PICKUP_HEALTH, 
   PICKUP_AMMO, 
   PICKUP_INVINCIBILITY, 
-  PICKUP_HOMING,
-  TILE_BRICK,
-  TILE_DIRT,
-  TILE_GRASS,
-  SPRITE_GUN,
-  SpriteGrid
+  PICKUP_HOMING, 
+  TILE_BRICK, 
+  TILE_DIRT, 
+  TILE_GRASS, 
+  SPRITE_GUN, 
+  SpriteGrid 
 } from '../services/spriteAssets';
 
 interface GameCanvasProps {
@@ -188,6 +191,25 @@ const GameCanvas: React.FC<GameCanvasProps> = ({ gameState, canvasRef, directorM
       }
     });
 
+    // --- Draw Warning Zones ---
+    gameState.warnings.forEach(w => {
+      ctx.fillStyle = Constants.COLORS.WARNING_ZONE;
+      // Draw a long strip across the entire world width at the warning Y level
+      ctx.fillRect(0, w.y, Constants.WORLD_WIDTH, w.height);
+      
+      // Draw striped hazard lines
+      ctx.save();
+      ctx.beginPath();
+      ctx.strokeStyle = "rgba(255, 0, 0, 0.5)";
+      ctx.lineWidth = 2;
+      for (let i = 0; i < Constants.WORLD_WIDTH; i += 40) {
+        ctx.moveTo(i, w.y);
+        ctx.lineTo(i + 20, w.y + w.height);
+      }
+      ctx.stroke();
+      ctx.restore();
+    });
+
     // --- Draw Pickups ---
     gameState.pickups.forEach(p => {
       let sprite = PICKUP_AMMO;
@@ -285,6 +307,7 @@ const GameCanvas: React.FC<GameCanvasProps> = ({ gameState, canvasRef, directorM
         playerSprite = PLAYER_SPRITE; // Idle
       }
 
+      // Draw Player Body
       drawSprite(
         ctx, 
         playerSprite, 
@@ -298,9 +321,62 @@ const GameCanvas: React.FC<GameCanvasProps> = ({ gameState, canvasRef, directorM
 
       ctx.shadowBlur = 0; // Reset
       
-      // --- Draw Gun (NES Style) ---
+      // --- Draw Jetpack (On Back) ---
       const centerX = p.pos.x + p.width / 2;
       const centerY = p.pos.y + p.height / 2;
+      
+      ctx.save();
+      // Translate to center to handle flipping relative to body
+      ctx.translate(centerX, centerY);
+      if (isFacingLeft) {
+          ctx.scale(-1, 1);
+      }
+      
+      // Jetpack Offset (Relative to Center, facing right)
+      // Player body is about 12px wide inside 32px box. 
+      // Center is at 16. Body back is roughly at x-4 relative to center.
+      const jetpackX = -8; 
+      const jetpackY = -2;
+      
+      // Draw Jetpack Sprite
+      // Note: We are already transformed, so we draw relative to 0,0 center
+      // But drawSprite expects absolute coordinates.
+      // Easiest is to manually call drawSprite with specific logic or simpler rects, 
+      // BUT let's reuse drawSprite by calculating absolute positions relative to the current transform context?
+      // No, drawSprite resets context partially. Let's do a mini-draw here or adapt logic.
+      // Actually, drawSprite saves/restores.
+      // So let's just calculate the absolute position for the jetpack.
+      
+      ctx.restore(); // Undo the center transform to draw absolutely
+      
+      // Calculate absolute position for Jetpack
+      // If facing left, it should be on the right side of the sprite rect.
+      // If facing right, it should be on the left side of the sprite rect.
+      const jpWidth = 14; 
+      const jpHeight = 20;
+      let jpX = p.pos.x + 4; 
+      if (isFacingLeft) {
+          jpX = p.pos.x + p.width - jpWidth - 4;
+      }
+      const jpY = p.pos.y + 8;
+
+      drawSprite(ctx, SPRITE_JETPACK, jpX, jpY, jpWidth, jpHeight, '#94a3b8', isFacingLeft);
+
+      // --- Draw Thrust Fire ---
+      if (p.isThrusting) {
+         // Flicker effect
+         if (Math.floor(now / 50) % 2 === 0) {
+            const fireWidth = 12;
+            const fireHeight = 10;
+            // Center fire below jetpack
+            const fireX = jpX + (jpWidth - fireWidth)/2;
+            const fireY = jpY + jpHeight - 2;
+            
+            drawSprite(ctx, SPRITE_JET_FIRE, fireX, fireY, fireWidth, fireHeight, '#3b82f6', isFacingLeft);
+         }
+      }
+
+      // --- Draw Gun (NES Style) ---
       
       ctx.save();
       ctx.translate(centerX, centerY);
@@ -321,19 +397,44 @@ const GameCanvas: React.FC<GameCanvasProps> = ({ gameState, canvasRef, directorM
       ctx.font = '10px "Press Start 2P", monospace'; // Generic fallback to monospace if font not loaded
       ctx.textAlign = 'center';
       ctx.fillText(p.name, centerX, p.pos.y - 12);
+
+      // --- Draw Jetpack Fuel Bar (Below Health Bar equivalent) ---
+      // We don't render a health bar *on* the player anymore (it's in HUD), 
+      // but let's put the fuel bar right below the player sprite.
+      const barWidth = p.width;
+      const barHeight = 3;
+      const fuelPct = p.jetpackFuel / Constants.JETPACK_MAX_FUEL;
+      
+      if (fuelPct < 1.0) { // Only show if not full or always show? Let's always show for clarity
+        const barX = p.pos.x;
+        const barY = p.pos.y + p.height + 4;
+        
+        // Background
+        ctx.fillStyle = '#334155'; // Slate 700
+        ctx.fillRect(barX, barY, barWidth, barHeight);
+        
+        // Fill
+        ctx.fillStyle = '#06b6d4'; // Cyan 500
+        ctx.fillRect(barX, barY, barWidth * fuelPct, barHeight);
+      }
     });
 
     // --- Draw Projectiles ---
     gameState.projectiles.forEach(p => {
       ctx.fillStyle = p.color;
       
-      // Draw as little squares instead of circles for NES vibe
-      const size = 6;
-      ctx.fillRect(p.pos.x - size/2, p.pos.y - size/2, size, size);
-      
-      // Trail effect
-      ctx.fillStyle = `${p.color}66`; // 40% opacity
-      ctx.fillRect(p.pos.x - p.vel.x * 0.2 - size/2, p.pos.y - p.vel.y * 0.2 - size/2, size * 0.8, size * 0.8);
+      if (p.projectileType === 'MISSILE') {
+        // Draw Missile Sprite
+        drawSprite(ctx, SPRITE_MISSILE, p.pos.x, p.pos.y, p.width, p.height, p.color, true); // true = face left
+      } else {
+        // Draw Bullets as little squares
+        const size = 6;
+        ctx.fillRect(p.pos.x - size/2, p.pos.y - size/2, size, size);
+        
+        // Trail effect
+        ctx.fillStyle = `${p.color}66`; // 40% opacity
+        ctx.fillRect(p.pos.x - p.vel.x * 0.2 - size/2, p.pos.y - p.vel.y * 0.2 - size/2, size * 0.8, size * 0.8);
+      }
     });
 
     ctx.restore();
@@ -369,8 +470,10 @@ const GameCanvas: React.FC<GameCanvasProps> = ({ gameState, canvasRef, directorM
             <div className="flex flex-col gap-2">
               <div className="flex items-center justify-between gap-4">
                 <span className="text-xs text-slate-400">LIFE</span>
-                <div className="flex gap-1 text-red-500 text-xl">
-                  {"♥".repeat(localPlayer.lives)}
+                <div className="flex gap-1 text-red-500 text-xl font-bold">
+                  <span>♥</span>
+                  <span>x</span>
+                  <span>{localPlayer.lives}</span>
                 </div>
               </div>
               <div className="flex items-center justify-between gap-4">
@@ -384,6 +487,15 @@ const GameCanvas: React.FC<GameCanvasProps> = ({ gameState, canvasRef, directorM
               <div className="flex items-center justify-between gap-4">
                 <span className="text-xs text-slate-400">PTS</span>
                 <span className="text-green-400 text-lg">{localPlayer.score.toString().padStart(6, '0')}</span>
+              </div>
+               <div className="flex items-center justify-between gap-4">
+                <span className="text-xs text-slate-400">FUEL</span>
+                <div className="w-24 h-2 bg-slate-700 rounded-full overflow-hidden">
+                    <div 
+                      className="h-full bg-cyan-500 transition-all duration-75 ease-linear"
+                      style={{ width: `${(localPlayer.jetpackFuel / Constants.JETPACK_MAX_FUEL) * 100}%` }}
+                    />
+                </div>
               </div>
             </div>
           </div>

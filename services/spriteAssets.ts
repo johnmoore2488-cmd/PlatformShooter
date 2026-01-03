@@ -71,6 +71,26 @@ export const PLAYER_JUMP: SpriteGrid = [
   [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0], // Empty bottom
 ];
 
+// Jetpack (5x8) - Metal/Grey
+export const SPRITE_JETPACK: SpriteGrid = [
+   [0, 1, 1, 1, 0],
+   [1, 2, 2, 2, 1],
+   [1, 2, 2, 2, 1],
+   [1, 2, 2, 2, 1],
+   [1, 1, 1, 1, 1],
+   [1, 1, 1, 1, 1],
+   [0, 3, 3, 3, 0], // Nozzle base
+   [0, 3, 0, 3, 0], // Tips
+];
+
+// Jet Thrust (5x4) - Fire/Blue
+export const SPRITE_JET_FIRE: SpriteGrid = [
+    [0, 2, 0, 2, 0],
+    [1, 2, 1, 2, 1],
+    [0, 1, 2, 1, 0],
+    [0, 0, 1, 0, 0],
+];
+
 // --- ENEMY SPRITES ---
 
 // Standard Enemy Frame 1
@@ -135,6 +155,15 @@ export const ENEMY_FLYING_2: SpriteGrid = [
   [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
   [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
   [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
+];
+
+// Missile Sprite (14x7 approx)
+export const SPRITE_MISSILE: SpriteGrid = [
+  [0, 0, 1, 1, 1, 1, 1, 1, 2, 2, 1, 0, 0, 0],
+  [0, 1, 1, 1, 1, 1, 1, 2, 2, 2, 2, 1, 0, 0],
+  [1, 1, 1, 1, 1, 1, 2, 2, 2, 2, 2, 2, 1, 0], // Middle
+  [0, 1, 1, 1, 1, 1, 1, 2, 2, 2, 2, 1, 0, 0],
+  [0, 0, 1, 1, 1, 1, 1, 1, 2, 2, 1, 0, 0, 0],
 ];
 
 // Pickups (8x8 Grids for smaller items)
